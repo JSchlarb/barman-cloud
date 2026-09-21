@@ -50,6 +50,7 @@ func DeleteBackupsByPolicy(
 	if err != nil {
 		return err
 	}
+	options = AppendSSECustomerKeyOption(options, barmanConfiguration)
 
 	parsedPolicy, err := barmanUtils.ParsePolicy(retentionPolicy)
 	if err != nil {

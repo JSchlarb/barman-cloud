@@ -77,6 +77,7 @@ func (archiver *WALArchiver) BarmanCloudWalArchiveOptions(
 	if err != nil {
 		return nil, err
 	}
+	options = barmanCommand.AppendSSECustomerKeyOption(options, configuration)
 
 	serverName := clusterName
 	if len(configuration.ServerName) != 0 {

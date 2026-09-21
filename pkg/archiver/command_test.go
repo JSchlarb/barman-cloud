@@ -23,7 +23,10 @@ import (
 	"os"
 	"strings"
 
+	machineryapi "github.com/cloudnative-pg/machinery/pkg/api"
+
 	barmanApi "github.com/cloudnative-pg/barman-cloud/pkg/api"
+	"github.com/cloudnative-pg/barman-cloud/pkg/utils"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -145,5 +148,53 @@ var _ = Describe("barmanCloudWalArchiveOptions", func() {
 				Equal(
 					"--gzip -e aes256 s3://bucket-name/ custom-server-name",
 				))
+	})
+})
+
+var _ = Describe("BarmanCloudCheckWalArchiveOptions with an SSE-C customer key", func() {
+	It("must not pass --sse-customer-key to barman-cloud-check-wal-archive", func(ctx SpecContext) {
+		tempDir := GinkgoT().TempDir()
+		archiver, err := New(ctx, nil, tempDir+"/spool", tempDir+"/pgdata", tempDir+"/empty")
+		Expect(err).ToNot(HaveOccurred())
+
+		config := &barmanApi.BarmanObjectStoreConfiguration{
+			DestinationPath: "s3://bucket-name/",
+			BarmanCredentials: barmanApi.BarmanCredentials{
+				AWS: &barmanApi.S3Credentials{
+					InheritFromIAMRole: true,
+					SSECustomerKey: &machineryapi.SecretKeySelector{
+						LocalObjectReference: machineryapi.LocalObjectReference{Name: "sse-c"},
+						Key:                  "key",
+					},
+				},
+			},
+		}
+		options, err := archiver.BarmanCloudCheckWalArchiveOptions(ctx, config, "test-cluster")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(options).ToNot(ContainElement("--sse-customer-key"))
+		Expect(options).To(ContainElements("--cloud-provider", "aws-s3"))
+	})
+})
+
+var _ = Describe("BarmanCloudWalArchiveOptions with an SSE-C customer key", func() {
+	It("passes --sse-customer-key to barman-cloud-wal-archive", func(ctx SpecContext) {
+		tempDir := GinkgoT().TempDir()
+		archiver, err := New(ctx, nil, tempDir+"/spool", tempDir+"/pgdata", tempDir+"/empty")
+		Expect(err).ToNot(HaveOccurred())
+
+		keyRef := &machineryapi.SecretKeySelector{
+			LocalObjectReference: machineryapi.LocalObjectReference{Name: "sse-c"},
+			Key:                  "key",
+		}
+		config := &barmanApi.BarmanObjectStoreConfiguration{
+			DestinationPath: "s3://bucket-name/",
+			BarmanCredentials: barmanApi.BarmanCredentials{AWS: &barmanApi.S3Credentials{
+				InheritFromIAMRole: true,
+				SSECustomerKey:     keyRef,
+			}},
+		}
+		options, err := archiver.BarmanCloudWalArchiveOptions(ctx, config, "test-cluster")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(options).To(ContainElements("--sse-customer-key", "file://"+utils.SSECustomerKeyFilePath(keyRef)))
 	})
 })

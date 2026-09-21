@@ -21,6 +21,9 @@ package command
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 
 	machineryapi "github.com/cloudnative-pg/machinery/pkg/api"
@@ -195,7 +198,7 @@ var _ = Describe("AppendCloudProviderOptions with AWS credentials", func() {
 		Expect(result).ToNot(ContainElement("--sse-customer-key"))
 	})
 
-	It("should add the SSE-C option pointing at the key file when a customer key is set", func(ctx SpecContext) {
+	It("should not add the SSE-C option to the cloud provider options", func(ctx SpecContext) {
 		credentials := barmanApi.BarmanCredentials{
 			AWS: &barmanApi.S3Credentials{
 				InheritFromIAMRole: true,
@@ -209,9 +212,115 @@ var _ = Describe("AppendCloudProviderOptions with AWS credentials", func() {
 		}
 		result, err := appendCloudProviderOptions(ctx, options, credentials)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(result).To(Equal([]string{
-			"--cloud-provider", "aws-s3",
-			"--sse-customer-key", "file://" + utils.SSECustomerKeyFileLocation,
+		Expect(result).To(Equal([]string{"--cloud-provider", "aws-s3"}))
+
+		Expect(AppendSSECustomerKeyOption(nil, &barmanApi.BarmanObjectStoreConfiguration{
+			BarmanCredentials: credentials,
+		})).To(Equal([]string{
+			"--sse-customer-key", "file://" + utils.SSECustomerKeyFilePath(credentials.AWS.SSECustomerKey),
 		}))
+	})
+})
+
+var _ = Describe("SSE-C customer key file per key reference", func() {
+	credentialsWithKey := func(secretName, key string) barmanApi.BarmanCredentials {
+		return barmanApi.BarmanCredentials{AWS: &barmanApi.S3Credentials{
+			InheritFromIAMRole: true,
+			SSECustomerKey: &machineryapi.SecretKeySelector{
+				LocalObjectReference: machineryapi.LocalObjectReference{Name: secretName},
+				Key:                  key,
+			},
+		}}
+	}
+	keyFileOption := func(_ SpecContext, credentials barmanApi.BarmanCredentials) string {
+		options := AppendSSECustomerKeyOption(nil, &barmanApi.BarmanObjectStoreConfiguration{
+			BarmanCredentials: credentials,
+		})
+		idx := slices.Index(options, "--sse-customer-key")
+		Expect(idx).To(BeNumerically(">=", 0))
+		return options[idx+1]
+	}
+
+	It("uses different key files for different secrets", func(ctx SpecContext) {
+		Expect(keyFileOption(ctx, credentialsWithKey("key-a", "key"))).
+			ToNot(Equal(keyFileOption(ctx, credentialsWithKey("key-b", "key"))))
+	})
+
+	It("uses different key files for different keys of the same secret", func(ctx SpecContext) {
+		Expect(keyFileOption(ctx, credentialsWithKey("keys", "a"))).
+			ToNot(Equal(keyFileOption(ctx, credentialsWithKey("keys", "b"))))
+	})
+
+	It("uses the same key file for the same key reference", func(ctx SpecContext) {
+		Expect(keyFileOption(ctx, credentialsWithKey("key-a", "key"))).
+			To(Equal(keyFileOption(ctx, credentialsWithKey("key-a", "key"))))
+	})
+})
+
+var _ = Describe("SSE-C option of the barman-cloud commands", func() {
+	var configuration *barmanApi.BarmanObjectStoreConfiguration
+	var sseOption []string
+
+	// fakeBarman puts an executable in PATH that records its arguments.
+	fakeBarman := func(name, output string) string {
+		dir := GinkgoT().TempDir()
+		argsFile := filepath.Join(dir, name+".args")
+		script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argsFile + "\necho '" + output + "'\n"
+		Expect(os.WriteFile(filepath.Join(dir, name), []byte(script), 0o700)).To(Succeed()) // #nosec G306
+		GinkgoT().Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		return argsFile
+	}
+	recordedArgs := func(argsFile string) []string {
+		content, err := os.ReadFile(argsFile) // #nosec G304
+		Expect(err).ToNot(HaveOccurred())
+		return strings.Split(strings.TrimSpace(string(content)), "\n")
+	}
+
+	BeforeEach(func() {
+		keyRef := &machineryapi.SecretKeySelector{
+			LocalObjectReference: machineryapi.LocalObjectReference{Name: "sse-c-key"},
+			Key:                  "key",
+		}
+		configuration = &barmanApi.BarmanObjectStoreConfiguration{
+			DestinationPath: "s3://bucket/path",
+			BarmanCredentials: barmanApi.BarmanCredentials{AWS: &barmanApi.S3Credentials{
+				InheritFromIAMRole: true,
+				SSECustomerKey:     keyRef,
+			}},
+		}
+		sseOption = []string{"--sse-customer-key", "file://" + utils.SSECustomerKeyFilePath(keyRef)}
+	})
+
+	It("is passed to barman-cloud-wal-restore", func(ctx SpecContext) {
+		options, err := CloudWalRestoreOptions(ctx, configuration, "cluster")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(options).To(ContainElements(sseOption))
+	})
+
+	It("is passed to barman-cloud-backup-delete", func(ctx SpecContext) {
+		argsFile := fakeBarman(utils.BarmanCloudBackupDelete, "")
+		Expect(DeleteBackupsByPolicy(ctx, configuration, "cluster", nil, "7d")).To(Succeed())
+		Expect(recordedArgs(argsFile)).To(ContainElements(sseOption))
+	})
+
+	It("is passed to barman-cloud-backup-list", func(ctx SpecContext) {
+		argsFile := fakeBarman(utils.BarmanCloudBackupList, `{"backups_list": []}`)
+		_, err := GetBackupList(ctx, configuration, "cluster", nil)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(recordedArgs(argsFile)).To(ContainElements(sseOption))
+	})
+
+	It("is passed to barman-cloud-backup-show", func(ctx SpecContext) {
+		argsFile := fakeBarman(utils.BarmanCloudBackupShow, `{"cloud": {}}`)
+		_, err := GetBackupByName(ctx, "backup", "cluster", configuration, nil)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(recordedArgs(argsFile)).To(ContainElements(sseOption))
+	})
+
+	It("is not added when no SSE-C key is configured", func(ctx SpecContext) {
+		configuration.AWS.SSECustomerKey = nil
+		options, err := CloudWalRestoreOptions(ctx, configuration, "cluster")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(options).ToNot(ContainElement("--sse-customer-key"))
 	})
 })

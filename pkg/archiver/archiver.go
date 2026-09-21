@@ -149,6 +149,7 @@ func (archiver *WALArchiver) BarmanCloudCheckWalArchiveOptions(
 			configuration.EndpointURL)
 	}
 
+	// check-wal-archive does not accept --sse-customer-key
 	options, err := command.AppendCloudProviderOptionsFromConfiguration(ctx, options, configuration)
 	if err != nil {
 		return nil, err

@@ -44,6 +44,7 @@ func CloudWalRestoreOptions(
 	if err != nil {
 		return nil, err
 	}
+	options = AppendSSECustomerKeyOption(options, configuration)
 
 	serverName := clusterName
 	if len(configuration.ServerName) != 0 {
@@ -64,6 +65,21 @@ func AppendCloudProviderOptionsFromConfiguration(
 	barmanConfiguration *barmanApi.BarmanObjectStoreConfiguration,
 ) ([]string, error) {
 	return appendCloudProviderOptions(ctx, options, barmanConfiguration.BarmanCredentials)
+}
+
+// AppendSSECustomerKeyOption adds --sse-customer-key when an SSE-C key is set.
+func AppendSSECustomerKeyOption(
+	options []string,
+	barmanConfiguration *barmanApi.BarmanObjectStoreConfiguration,
+) []string {
+	if barmanConfiguration.AWS == nil || barmanConfiguration.AWS.SSECustomerKey == nil {
+		return options
+	}
+
+	return append(
+		options,
+		"--sse-customer-key",
+		"file://"+utils.SSECustomerKeyFilePath(barmanConfiguration.AWS.SSECustomerKey))
 }
 
 // AppendCloudProviderOptionsFromBackup takes an options array and adds the cloud provider specified
@@ -88,16 +104,6 @@ func appendCloudProviderOptions(
 			options,
 			"--cloud-provider",
 			"aws-s3")
-
-		// When Server-Side Encryption with Customer-provided keys (SSE-C)
-		// is configured, point barman-cloud at the key file that the
-		// credentials package materializes from the referenced secret.
-		if credentials.AWS.SSECustomerKey != nil {
-			options = append(
-				options,
-				"--sse-customer-key",
-				"file://"+utils.SSECustomerKeyFileLocation)
-		}
 	case credentials.Azure != nil:
 		options = append(
 			options,

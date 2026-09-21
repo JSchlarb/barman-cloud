@@ -76,6 +76,7 @@ func executeQueryCommand(
 	if err != nil {
 		return "", err
 	}
+	options = AppendSSECustomerKeyOption(options, barmanConfiguration)
 
 	options = append(options, barmanConfiguration.DestinationPath, serverName)
 	options = append(options, additionalOptions...)

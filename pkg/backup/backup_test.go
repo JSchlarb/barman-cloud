@@ -22,9 +22,11 @@ package backup
 import (
 	"strings"
 
+	machineryapi "github.com/cloudnative-pg/machinery/pkg/api"
 	"k8s.io/utils/ptr"
 
 	barmanApi "github.com/cloudnative-pg/barman-cloud/pkg/api"
+	"github.com/cloudnative-pg/barman-cloud/pkg/utils"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -129,5 +131,20 @@ var _ = Describe("GetBarmanCloudBackupOptions", func() {
 						"--cloud-provider aws-s3 " +
 						"s3://bucket-name/ test-cluster",
 				))
+	})
+
+	It("should pass the SSE-C customer key file when set", func(ctx SpecContext) {
+		backupCommand.configuration.Data = nil
+		keyRef := &machineryapi.SecretKeySelector{
+			LocalObjectReference: machineryapi.LocalObjectReference{Name: "sse-c"},
+			Key:                  "key",
+		}
+		backupCommand.configuration.BarmanCredentials = barmanApi.BarmanCredentials{
+			AWS: &barmanApi.S3Credentials{InheritFromIAMRole: true, SSECustomerKey: keyRef},
+		}
+
+		options, err := backupCommand.GetBarmanCloudBackupOptions(ctx, "test-backup", "test-cluster")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(options).To(ContainElements("--sse-customer-key", "file://"+utils.SSECustomerKeyFilePath(keyRef)))
 	})
 })

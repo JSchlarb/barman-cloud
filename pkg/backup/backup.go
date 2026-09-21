@@ -122,6 +122,7 @@ func (b *Command) GetBarmanCloudBackupOptions(
 	if err != nil {
 		return nil, err
 	}
+	options = barmanCommand.AppendSSECustomerKeyOption(options, b.configuration)
 
 	options = append(
 		options,
